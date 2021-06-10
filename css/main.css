@@ -1,0 +1,14 @@
+body{
+    margin: 0;
+    height: 100vh;
+    position: relative;
+}
+canvas{
+    display: block;
+}
+
+#interface{
+    position:absolute;
+    top:0;
+    left:0;
+}

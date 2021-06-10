@@ -1,0 +1,525 @@
+<!DOCType html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" />
+    <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+    <title>Ragdoll</title>
+    <script src="./Oimo.js-gh-pages/examples/js/libs/three.min.js"></script>
+    <script src="./Oimo.js-gh-pages/examples/js/controls/OrbitControls.js"></script>
+    <script src="./Oimo.js-gh-pages/build/oimo.js"></script>
+    <link rel="stylesheet" href="./css/main.css" />
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+    <div id='interface'>
+        <div>
+            <div style="color:rgb(255, 255, 255);">quantity</div>
+            <input type="number" name="quantity" min="1" max="10" value="1" id='MaxNumber'>
+        </div>
+        <div>
+            <div style="color:rgb(255, 255, 255);">gravity</div>
+            <input type="number" name="gravity" min="-10" max="0" value="-8" id='gravity' onChange=gravity()>
+        </div>
+        <div>
+            <div style="color:rgb(255, 255, 255);">stair steps</div>
+            <input type="number" name="step" min="1" max="100" value="50" id='step' onChange=populate() />
+        </div>
+        <div>
+            <div style="color:rgb(255, 255, 255);">spring constant</div>
+            <input type="number" name="frequency" min="1" max="10" value="2" id='frequency' />
+            <input type="number" name="damping" min="0" max="1" value="0.3" step="0.05" id='damping' />
+        </div>
+        <input type="submit" onClick=populate()>
+        <div id='info' style="color:rgb(255, 255, 255);"></div>
+    </div>
+
+    <script>
+        let antialias = true;
+        //three
+        let camera, scene, light, renderer, canvas, controls;
+
+        let meshes = [];
+
+        let geos = {};
+        let mats = {};
+        let grounds = [];
+
+        //oimo
+        let world = null;
+        let bodys = null;
+        let joints = null;
+        let collision = true;
+        let infos;
+        let step = document.getElementById("step").value;
+
+        //damage calculating
+        let damage = {};
+
+        //keyboard input
+        let key = "";
+
+        init();
+        loop();
+
+
+        function degrees_to_radians(degrees) {
+            let pi = Math.PI;
+            return degrees * (pi / 180);
+        }
+
+        function init() {
+
+            infos = document.getElementById("info");
+
+            canvas = document.getElementById("canvas");
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 5000);
+            camera.position.set(0, 160 + (step * 20), 400);
+
+            controls = new THREE.OrbitControls(camera, canvas);
+            controls.target.set(0, 20, 0);
+            controls.update();
+            scene = new THREE.Scene();
+
+            scene.add(new THREE.AmbientLight(0x3D4143));
+
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, precision: "mediump", antialias: antialias });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+
+            let materialType = 'MeshBasicMaterial';
+
+            light = new THREE.DirectionalLight(0xffffff, 1);
+            light.position.set(300, 1000, 500);
+            light.target.position.set(0, 0, 0);
+            light.castShadow = true;
+            let d = 300;
+            light.shadow.camera = new THREE.OrthographicCamera(-d, d, d, -d, 500, 1600);
+            light.shadow.bias = 0.0001;
+            light.shadow.mapSize.width = light.shadow.mapSize.height = 1024;
+            scene.add(light);
+
+            materialType = 'MeshPhongMaterial';
+
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFShadowMap;
+            // background
+            var buffgeoBack = new THREE.BufferGeometry();
+            buffgeoBack.fromGeometry(new THREE.IcosahedronGeometry(10000, 2));
+            var back = new THREE.Mesh(buffgeoBack, new THREE.MeshBasicMaterial({ map: gradTexture([[0.75, 0.6, 0.4, 0.25], ['#1B1D1E', '#3D4143', '#72797D', '#b0babf']]), side: THREE.BackSide, depthWrite: false, fog: false }));
+            back.geometry.applyMatrix(new THREE.Matrix4().makeRotationZ(degrees_to_radians(15)));
+            scene.add(back);
+
+            //geometries
+            geos['sphere'] = new THREE.BufferGeometry().fromGeometry(new THREE.SphereGeometry(1, 20, 10));
+            geos['box'] = new THREE.BufferGeometry().fromGeometry(new THREE.BoxGeometry(1, 1, 1));
+            geos['cylinder'] = new THREE.BufferGeometry().fromGeometry(new THREE.CylinderGeometry(0.5, 0.5, 1, 16));
+
+            //materials
+            mats['damage0'] = new THREE[materialType]({ map: basicTexture(0), name: 'damage0', transparent: true, opacity: 0.5, shininess: 80, specular: 0xffffff });
+            mats['damage1'] = new THREE[materialType]({ map: basicTexture(1), name: 'damage1', transparent: true, opacity: 0.6, shininess: 80, specular: 0xffffff });
+            mats['damage2'] = new THREE[materialType]({ map: basicTexture(2), name: 'damage2', transparent: true, opacity: 0.7, shininess: 80, specular: 0xffffff });
+            mats['damage3'] = new THREE[materialType]({ map: basicTexture(3), name: 'damage3', transparent: true, opacity: 0.8, shininess: 80, specular: 0xffffff });
+            mats['damage4'] = new THREE[materialType]({ map: basicTexture(4), name: 'damage4', transparent: true, opacity: 0.9, shininess: 80, specular: 0xffffff });
+            mats['damage5'] = new THREE[materialType]({ map: basicTexture(5), name: 'damage5', transparent: true, opacity: 1.0, shininess: 80, specular: 0xffffff });
+
+            mats['ground'] = new THREE[materialType]({ color: 0x3D4143, transparent: false, shininess: 10 });
+
+
+            //addEventListener
+            document.addEventListener("keydown", function (event) {
+                if (event.defaultPrevented) {
+                    return; // Do nothing if the event was already processed
+                }
+                switch (event.key) {
+                    case "w":
+                        key = "up";
+                        break;
+                    case "a":
+                        key = "left";
+                        break;
+                    case "s":
+                        key = "down";
+                        break;
+                    case "d":
+                        key = "right";
+                        break;
+                    case " ":
+                        key = "jump";
+                        break;
+                    default:
+                        return; // Quit when this doesn't handle the key event.
+                }
+
+
+                // Cancel the default action to avoid it being handled twice
+                event.preventDefault();
+            }, true);
+
+            initOimoPhysics();
+        }
+
+        function loop() {
+            requestAnimationFrame(loop);
+
+            updateOimoPhysics();
+            renderer.render(scene, camera);
+        }
+
+
+        //physics
+        function initOimoPhysics() {
+            world = new OIMO.World({ worldscale: 100 });
+            gravity();
+            populate();
+        }
+
+        function populate() {
+            let count = document.getElementById("MaxNumber").value;
+            step = document.getElementById("step").value;
+
+            //clear all world
+            clearMesh();
+            world.clear();
+            bodys = [];
+            joints = [];
+            damage = {};
+
+            //create ground
+            for (let index = 0; index < step; index++) {
+                addStaticBox([1000, 400, 40], [0, (step - 1 - index) * 20, (index * 20) - (Math.floor(step / 4) * 20)], [0, 0, 0]);
+
+            }
+            addStaticBox([1000, 400, 40 * step], [0, 0, 20 * step], [0, 0, 0]);
+
+            //create ragdolls
+            let i = count;
+            let px = 0;
+            let py = 100 + (step * 40);
+            let pz = 0;
+            let frequency = document.getElementById("frequency").value;
+            let damping = document.getElementById("damping").value;
+            let spring = [frequency, damping];
+
+            while (i > 0) {
+                i--;
+
+                py = py + (i * 150);
+
+                //body and head
+                bodys.push(world.add({ type: "box", size: [20, 10, 15], pos: [px, py - 30, pz], move: true, name: 'pelvis' + i }));
+                meshes.push(addThreeMesh([20, 10, 15], null, null, 0, 'cylinder'));
+
+                bodys.push(world.add({ type: "box", size: [20, 10, 15], pos: [px, py - 20, pz], move: true, name: 'spine1_' + i }));
+                meshes.push(addThreeMesh([20, 10, 15], null, null, 0, 'cylinder'));
+
+                bodys.push(world.add({ type: "box", size: [20, 10, 15], pos: [px, py - 10, pz], move: true, name: 'spine2_' + i }));
+                meshes.push(addThreeMesh([20, 10, 15], null, null, 0, 'cylinder'));
+
+                bodys.push(world.add({ type: "box", size: [20, 10, 15], pos: [px, py, pz], move: true, name: 'spine3_' + i }));
+                meshes.push(addThreeMesh([20, 10, 15], null, null, 0, 'cylinder'));
+
+                bodys.push(world.add({ type: "box", size: [20, 10, 15], pos: [px, py + 10, pz], move: true, name: 'spine4_' + i }));
+                meshes.push(addThreeMesh([20, 10, 15], null, null, 0, 'cylinder'));
+
+                bodys.push(world.add({ type: "sphere", size: [10, 10, 10], pos: [px, py + 30, pz], move: true, name: 'head' + i }));
+                meshes.push(addThreeMesh([10, 10, 10], null, null, 1, 'sphere'));
+
+                joints.push(world.add({ type: "joint", body1: 'pelvis' + i, body2: 'spine1_' + i, pos1: [0, 5, 0], pos2: [0, -5, 0], min: 2, max: 20, collision: collision, spring: spring }));
+                joints.push(world.add({ type: "joint", body1: 'spine1_' + i, body2: 'spine2_' + i, pos1: [0, 5, 0], pos2: [0, -5, 0], min: 2, max: 20, collision: collision, spring: spring }));
+                joints.push(world.add({ type: "joint", body1: 'spine2_' + i, body2: 'spine3_' + i, pos1: [0, 5, 0], pos2: [0, -5, 0], min: 2, max: 20, collision: collision, spring: spring }));
+                joints.push(world.add({ type: "joint", body1: 'spine3_' + i, body2: 'spine4_' + i, pos1: [0, 5, 0], pos2: [0, -5, 0], min: 2, max: 20, collision: collision, spring: spring }));
+                joints.push(world.add({ type: "joint", body1: 'spine4_' + i, body2: 'head' + i, pos1: [0, 5, 0], pos2: [0, -10, 0], min: 2, max: 20, collision: collision, spring: spring }));
+
+                //arm
+                //left arm
+                bodys.push(world.add({ type: "box", size: [20, 10, 10], pos: [px - 20, py + 8, pz], rot: [0, 0, 20], move: true, name: 'L_arm' + i }));
+                meshes.push(addThreeMesh([20, 10, 10], null, null, 3, 'cylinder'));
+                bodys.push(world.add({ type: "box", size: [20, 8, 8], pos: [px - 40, py, pz], rot: [0, 0, 20], move: true, name: 'LF_arm' + i }));
+                meshes.push(addThreeMesh([20, 8, 8], null, null, 3, 'cylinder'));
+
+                //right arm
+                bodys.push(world.add({ type: "box", size: [20, 10, 10], pos: [px + 20, py + 8, pz], rot: [0, 0, -20], move: true, name: 'R_arm' + i }));
+                meshes.push(addThreeMesh([20, 10, 10], null, null, 3, 'cylinder'));
+                bodys.push(world.add({ type: "box", size: [20, 8, 8], pos: [px + 40, py, pz], rot: [0, 0, -20], move: true, name: 'RF_arm' + i }));
+                meshes.push(addThreeMesh([20, 8, 8], null, null, 3, 'cylinder'));
+
+                joints.push(world.add({ type: "joint", body1: 'spine4_' + i, body2: 'L_arm' + i, pos1: [-10, 0, 0], pos2: [10, 0, 0], axe1: [0, 1, 1], axe2: [0, 1, 1], collision: collision }));
+                joints.push(world.add({ type: "joint", body1: 'spine4_' + i, body2: 'R_arm' + i, pos1: [10, 0, 0], pos2: [-10, 0, 0], axe1: [0, 1, 1], axe2: [0, 1, 1], collision: collision }));
+
+                joints.push(world.add({ type: "joint", body1: 'L_arm' + i, body2: 'LF_arm' + i, pos1: [-10, 0, 0], pos2: [10, 0, 0], axe1: [0, 1, 0], axe2: [0, 1, 0], collision: collision }));
+                joints.push(world.add({ type: "joint", body1: 'R_arm' + i, body2: 'RF_arm' + i, pos1: [10, 0, 0], pos2: [-10, 0, 0], axe1: [0, 1, 0], axe2: [0, 1, 0], collision: collision }));
+
+                //leg
+                //left leg
+                bodys.push(world.add({ type: "box", size: [10, 20, 10], pos: [px - 6, py - 50, pz], rot: [0, 0, -20], move: true, name: 'L_leg' + i }));
+                meshes.push(addThreeMesh([10, 20, 10], null, null, 0, 'cylinder'));
+                bodys.push(world.add({ type: "box", size: [8, 20, 8], pos: [px - 15, py - 70, pz], rot: [0, 0, -20], move: true, name: 'LF_leg' + i }));
+                meshes.push(addThreeMesh([8, 20, 8], null, null, 0, 'cylinder'));
+
+                //right leg
+                bodys.push(world.add({ type: "box", size: [10, 20, 10], pos: [px + 6, py - 50, pz], rot: [0, 0, 20], move: true, name: 'R_leg' + i }));
+                meshes.push(addThreeMesh([10, 20, 10], null, null, 0, 'cylinder'));
+                bodys.push(world.add({ type: "box", size: [8, 20, 8], pos: [px + 15, py - 70, pz], rot: [0, 0, 20], move: true, name: 'RF_leg' + i }));
+                meshes.push(addThreeMesh([8, 20, 8], null, null, 0, 'cylinder'));
+
+                joints.push(world.add({ type: "joint", body1: 'pelvis' + i, body2: 'L_leg' + i, pos1: [-6, -5, 0], pos2: [0, 10, 0], min: 2, max: 60, collision: collision }));
+                joints.push(world.add({ type: "joint", body1: 'pelvis' + i, body2: 'R_leg' + i, pos1: [6, -5, 0], pos2: [0, 10, 0], min: 2, max: 60, collision: collision }));
+
+                joints.push(world.add({ type: "joint", body1: 'L_leg' + i, body2: 'LF_leg' + i, pos1: [0, -10, 0], pos2: [0, 10, 0], axe1: [1, 0, 0], axe2: [1, 0, 0], min: 2, max: 60, collision: collision }));
+                joints.push(world.add({ type: "joint", body1: 'R_leg' + i, body2: 'RF_leg' + i, pos1: [0, -10, 0], pos2: [0, 10, 0], axe1: [1, 0, 0], axe2: [1, 0, 0], min: 2, max: 60, collision: collision }));
+            }
+
+        }
+
+        function damagedCheck(body1, body2) {
+
+            let clash = world.getContact(body1, body2);
+
+            if (clash) {
+                if (!clash.close) {
+                    if (body1.isDynamic) {
+                        //console.log("test");
+                        if (damage[body1.name]) damage[body1.name] += 1;
+                        else damage[body1.name] = 1;
+                    }
+
+                    if (body2.isDynamic) {
+                        if (damage[body2.name]) damage[body2.name] += 1;
+                        else damage[body2.name] = 1;
+                    }
+
+
+                }
+            }
+
+
+        }
+
+        function updateOimoPhysics() {
+            if (world == null) return;
+
+            //one step of time in world
+            world.step();
+
+            for (let index = 0; index < bodys.length; index++) {
+                for (let index2 = 0; index2 < grounds.length; index2++) {
+                    if (bodys[index].sleeping) continue;
+                    damagedCheck(bodys[index], grounds[index2]);
+                }
+            }
+
+            for (let index = 0; index < bodys.length; index++) {
+                for (let index2 = 0; index2 < bodys.length; index2++) {
+                    if (bodys[index].sleeping || bodys[index2].sleeping) continue;
+                    damagedCheck(bodys[index], bodys[index2]);
+                }
+            }
+
+            let x, y, z, mesh, body;
+            let i = bodys.length;
+
+            while (i > 0) {
+                i--;
+                body = bodys[i];
+                mesh = meshes[i];
+
+                if (body.name.substring(0, 4) === 'head') checkInput(bodys[i]);
+
+                let damageBody = Math.floor(damage[body.name] / 10);
+
+                if (!damageBody) damageBody = 0;
+                if (damageBody > 5) damageBody = 5;
+                mesh.material = mats['damage' + damageBody];
+
+                if (!body.sleeping) {
+                    mesh.position.copy(body.getPosition());
+                    mesh.quaternion.copy(body.getQuaternion());
+
+                    //reset position
+                    if (mesh.position.y < -100 && bodys[i].name.substring(0, 6) === 'pelvis') {
+                        x = 0;
+                        z = 0;
+                        y = 300 + (step * 40) + (100);
+
+                        //head and spine
+                        bodys[i + 0].resetPosition(x, y - 30, z);
+                        bodys[i + 1].resetPosition(x, y - 20, z);
+                        bodys[i + 2].resetPosition(x, y - 10, z);
+                        bodys[i + 3].resetPosition(x, y, z);
+                        bodys[i + 4].resetPosition(x, y + 10, z);
+                        bodys[i + 5].resetPosition(x, y + 30, z);
+
+                        //arm
+                        bodys[i + 6].resetPosition(x - 20, y + 8, z);
+                        bodys[i + 7].resetPosition(x - 40, y, z);
+                        bodys[i + 8].resetPosition(x + 20, y + 8, z);
+                        bodys[i + 9].resetPosition(x + 40, y, z);
+
+                        //leg
+                        bodys[i + 10].resetPosition(x - 6, y - 50, z);
+                        bodys[i + 11].resetPosition(x - 15, y - 70, z);
+                        bodys[i + 12].resetPosition(x + 6, y - 50, z);
+                        bodys[i + 13].resetPosition(x + 15, y - 70, z);
+
+                        //head and spine
+                        bodys[i + 0].resetRotation(0, 0, 0);
+                        bodys[i + 1].resetRotation(0, 0, 0);
+                        bodys[i + 2].resetRotation(0, 0, 0);
+                        bodys[i + 3].resetRotation(0, 0, 0);
+                        bodys[i + 4].resetRotation(0, 0, 0);
+                        bodys[i + 5].resetRotation(0, 0, 0);
+
+                        //arm
+                        bodys[i + 6].resetRotation(0, 0, 0);
+                        bodys[i + 7].resetRotation(0, 0, 0);
+                        bodys[i + 8].resetRotation(0, 0, 0);
+                        bodys[i + 9].resetRotation(0, 0, 0);
+
+                        //leg
+                        bodys[i + 10].resetRotation(0, 0, 0);
+                        bodys[i + 11].resetRotation(0, 0, 0);
+                        bodys[i + 12].resetRotation(0, 0, 0);
+                        bodys[i + 13].resetRotation(0, 0, 0);
+                    }
+
+                }
+            }
+        }
+
+        function gravity() {
+            nG = document.getElementById("gravity").value;
+            world.gravity = new OIMO.Vec3(0, nG, 0);
+            if (bodys != null) {
+                let i = body.length;
+                while (i > 0) {
+                    i--;
+                    bodys[i].body.awake();
+                }
+            }
+        }
+
+        //mesh
+        //ground mesh
+        function addStaticBox(size, position, rotation) {
+            let mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), mats['ground']);
+            world.add({ size: size, pos: position });
+            mesh.position.set(position[0], position[1], position[2]);
+            mesh.rotation.set(degrees_to_radians(rotation[0]), degrees_to_radians(rotation[1]), degrees_to_radians(rotation[2]));
+            scene.add(mesh);
+            grounds.push(mesh);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+        }
+
+        //all meshes
+        function addThreeMesh(size, position, rotation, color, type) {
+            let mesh;
+            if (type === 'sphere') {
+                mesh = new THREE.Mesh(geos['sphere'], mats['damage0']);
+            }
+
+            else if (type === 'cylinder') {
+                mesh = new THREE.Mesh(geos['cylinder'], mats['damage0']);
+            }
+
+            else {
+                mesh = new THREE.Mesh(geos['box'], mats['damage0']);
+            }
+
+            mesh.scale.set(size[0], size[1], size[2]);
+            if (position) mesh.position.set(position[0], position[1], position[2]);
+            if (rotation) mesh.rotation.set(degrees_to_radians(rotation[0]), degrees_to_radians(rotation[1]), degrees_to_radians(rotation[2]));
+            scene.add(mesh);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            return mesh;
+        }
+
+        //clear the previous frame meshes
+        function clearMesh() {
+            let i = meshes.length;
+            while (i > 0) {
+                i--;
+                scene.remove(meshes[i]);
+            }
+
+            i = grounds.length;
+            while (i > 0) {
+                i--;
+                scene.remove(grounds[i]);
+            }
+
+            grounds = [];
+            meshes = [];
+        }
+
+        function gradTexture(color) {
+            let c = document.createElement("canvas");
+            let ct = c.getContext("2d");
+            let size = 1024;
+            c.width = 16; c.height = size;
+            let gradient = ct.createLinearGradient(0, 0, 0, size);
+            let i = color[0].length;
+            while (i--) { gradient.addColorStop(color[0][i], color[1][i]); }
+            ct.fillStyle = gradient;
+            ct.fillRect(0, 0, 16, size);
+            let texture = new THREE.Texture(c);
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+        function basicTexture(n) {
+            let canvas = document.createElement('canvas');
+            canvas.width = canvas.height = 64;
+            let context = canvas.getContext('2d');
+            let colors = [];
+            let gradient;
+
+            colors[0] = "rgb(" + (n * 50) + ", 0, 0)";
+            colors[1] = "rgb(" + (n * 50) + ", 0, 0)";
+
+            gradient = context.createLinearGradient(0, 0, 0, 64);
+            gradient.addColorStop(0, colors[1]);
+            gradient.addColorStop(1, colors[0]);
+
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, 64, 64);
+
+            let tx = new THREE.Texture(canvas);
+            tx.needsUpdate = true;
+            return tx;
+        }
+
+        //key input
+        function checkInput(body) {
+
+            if (body) {
+                switch (key) {
+                    case "up":
+                        body.linearVelocity.addEqual(new OIMO.Vec3(1, 0, 0));
+                        break;
+                    case "down":
+                        body.linearVelocity.addEqual(new OIMO.Vec3(-1, 0, 0));
+                        break;
+                    case "right":
+                        body.linearVelocity.addEqual(new OIMO.Vec3(0, 0, 1));
+                        break;
+                    case "left":
+                        body.linearVelocity.addEqual(new OIMO.Vec3(0, 0, -1));
+                        break;
+                    case "jump":
+                        body.linearVelocity.addEqual(new OIMO.Vec3(0, 3, 0));
+                        break;
+                }
+            }
+            key = "";
+        }
+
+
+    </script>
+</body>
+
+</html>
